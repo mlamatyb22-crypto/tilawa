@@ -162,6 +162,8 @@ def dtw_band(X, R, centre, band):
     js_last = np.arange(st, st + len(arr))
     ok = js_last >= int(0.9 * nr)
     score = np.where(ok, arr / (nx + js_last), INF)
+    if not np.isfinite(score).any() or float(score.min()) >= 1e17:
+        raise ValueError('نهاية المحاذاة غير قابلة للوصول')
     j_end = int(np.argmin(score)) + st
     # تراجع
     path = []
@@ -170,7 +172,10 @@ def dtw_band(X, R, centre, band):
         path.append((i, j))
         if i == 0:
             break
-        k = int(back[i, j - int(lo[i])])
+        jj = j - int(lo[i])
+        if jj < 0 or jj >= w:
+            raise ValueError('خروج المسار من النطاق')
+        k = int(back[i, jj])
         if k == 0:
             i, j = i - 1, j - 1
         elif k == 1:
@@ -212,7 +217,15 @@ def analyse_surah(xwav16, t_start, t_end, approx_cuts, who_list, surah, tmp):
         rs = np.array([0.0] + list(ends[:-1]) + [ends[-1]]) * FPS
         rs[0] = 0.0
         centre = np.interp(np.arange(len(X)), xs, rs)
-        path, cost = dtw_band(X, R, centre, int(BAND_S * FPS))
+        path = None
+        for band_s in (BAND_S, 40.0, 90.0):
+            try:
+                path, cost = dtw_band(X, R, centre, int(band_s * FPS))
+                break
+            except (ValueError, IndexError):
+                continue
+        if path is None:
+            raise RuntimeError('تعذرت المحاذاة')
         pb = ref_boundaries_in_x(path, ends[:-1], 0)
         res[who] = {'ends': [base + t for t in pb], 'cost': cost, 'ref_secs': ends[-1]}
     return res
