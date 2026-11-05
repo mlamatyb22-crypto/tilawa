@@ -29,6 +29,8 @@ RATE = 24000
 FRAME = 0.01
 HERE = Path(__file__).resolve().parent
 WORDS_FILE = HERE / 'quran_words.json'
+PAUSE_WEIGHT = 0.0  # وزن قوة الوقفة في اختيار حدود الآيات (0 = تعطيل)
+USE_PROFILE = True   # استعمال إيقاع الحصري مع عدد الكلمات
 LEAD_WORDS = [4, 4]  # استعاذة ثم بسملة تقريبًا (عدد الكلمات)
 BASMALA_WORDS = 4
 
@@ -56,6 +58,27 @@ def load_words():
     assert sum(len(v) for v in out.values()) == 6236
     WORDS_FILE.write_text(json.dumps(out), encoding='utf-8')
     return out
+
+
+PROFILES_FILE = HERE / 'profiles.json'
+_PROF = None
+
+
+def load_profiles():
+    """مدة كل آية عند الحصري والمنشاوي (من make_profile.py). الحصري للتحسين والمنشاوي للتحقق المستقل."""
+    global _PROF
+    if _PROF is None:
+        _PROF = json.loads(PROFILES_FILE.read_text(encoding='utf-8')) if PROFILES_FILE.exists() else {}
+    return _PROF
+
+
+def heldout_error(surah, seg_durs):
+    """متوسط الخطأ النسبي لأطوال مقاطع الآيات مقابل إيقاع المنشاوي (لم يُستخدم في الاختيار)."""
+    m = load_profiles().get('minshawi', {}).get(str(surah))
+    if not m or len(m) != len(seg_durs):
+        return None
+    k = sum(seg_durs) / sum(m)
+    return sum(abs(d - k * x) / (k * x + 0.6) for d, x in zip(seg_durs, m)) / len(m)
 
 
 def decode(src, wav):
@@ -116,10 +139,15 @@ def align(cands, weights, lo, hi, durs=None):
         cum += e
         cumexp.append(lo + cum)
     band = max(6.0, speech * 0.12)
+    cc = [0.0] * m
+    if durs and PAUSE_WEIGHT:
+        ranked = sorted(durs, reverse=True)
+        dref = ranked[min(len(ranked), max(1, k - 1)) - 1]
+        cc = [PAUSE_WEIGHT * max(0.0, 1 - d / dref) for d in durs]
     prev = {}
     for c in range(m):
         if abs(cands[c] - cumexp[0]) <= band:
-            prev[c] = (seg_cost(0, lo, cands[c]), [c])
+            prev[c] = (seg_cost(0, lo, cands[c]) + cc[c], [c])
     for j in range(1, k - 1):
         cur = {}
         for c in range(m):
@@ -132,7 +160,7 @@ def align(cands, weights, lo, hi, durs=None):
                     if best is None or v < best[0]:
                         best = (v, p)
             if best:
-                cur[c] = (best[0], prev[best[1]][1] + [c])
+                cur[c] = (best[0] + cc[c], prev[best[1]][1] + [c])
         prev = cur
         if not prev:
             return None
@@ -153,7 +181,7 @@ def align(cands, weights, lo, hi, durs=None):
         chosen = sorted(durs[c] for c in idx) or [0]
         strong = 0.75 * chosen[len(chosen) // 2]
         score += 0.6 * sum(1 for c in range(m) if c not in set(idx) and durs[c] >= strong)
-    return cuts, sum(errs) / len(errs), max(errs), score
+    return cuts, sum(errs) / len(errs), max(errs), score, errs
 
 
 def cut_clip(wav, s, e, dest):
@@ -168,6 +196,14 @@ def cut_clip(wav, s, e, dest):
             o.setframerate(RATE)
             o.writeframes(frames)
         return run(['afconvert', '-f', 'm4af', '-d', 'aac', '-b', '40000', str(tmp), str(dest)])
+
+
+def ayah_weights(surah, words):
+    h = load_profiles().get('husary', {}).get(str(surah)) if USE_PROFILE else None
+    if not h or len(h) != len(words):
+        return list(words)
+    per_word = sum(h) / sum(words)
+    return [0.5 * w + 0.5 * x / per_word for w, x in zip(words, h)]
 
 
 def analyse(wav, surah, noise, min_silence, force_lead=None):
@@ -185,10 +221,10 @@ def analyse(wav, surah, noise, min_silence, force_lead=None):
         cands = [(s + e) / 2 for s, e, d in inner]
         durs = [d for s, e, d in inner]
         for lead in ([force_lead] if force_lead is not None else (0, 1, 2)):
-            weights = LEAD_WORDS[:lead] + words
+            weights = LEAD_WORDS[:lead] + ayah_weights(surah, words)
             res = align(cands, weights, lo, hi, durs)
             if res and (best is None or res[3] < best['score']):
-                best = {'cuts': res[0], 'mean': res[1], 'worst': res[2], 'score': res[3], 'lead': lead, 'lo': lo, 'hi': hi,
+                best = {'cuts': res[0], 'mean': res[1], 'worst': res[2], 'score': res[3], 'errs': res[4], 'lead': lead, 'lo': lo, 'hi': hi,
                         'db': used_db, 'cands': len(cands), 'min_silence': ms}
         if best and best['mean'] < 0.35:
             break

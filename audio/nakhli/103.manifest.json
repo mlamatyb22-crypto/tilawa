@@ -1,1 +1,1 @@
-{"source": "103_Al_Asr.mp3", "surah": 103, "ayahs": 3, "lead": 1, "mean_error": 0.16, "clips": [{"file": "103001.m4a", "start": 0.0, "end": 8.32}, {"file": "103002.m4a", "start": 8.32, "end": 14.23}, {"file": "103003.m4a", "start": 14.23, "end": 25.07}]}
+{"source": "103_Al_Asr.mp3", "surah": 103, "ayahs": 3, "lead": 1, "unsure": [], "mean_error": 0.142, "clips": [{"file": "103001.m4a", "start": 0.0, "end": 8.32}, {"file": "103002.m4a", "start": 8.32, "end": 14.23}, {"file": "103003.m4a", "start": 14.23, "end": 25.07}]}

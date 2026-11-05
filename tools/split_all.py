@@ -22,6 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import split_ayahs as S  # noqa: E402
 
 MAX_MEAN = 0.45
+UNSURE = 0.9  # خطأ نسبي لمقطع واحد أعلى منه يُعلَّم «غير مضمون»
+
+
+def prior_lead(s):
+    """النمط المرصود في تسجيلات الشيخ حسن النخلي (فُحصت بداية كل ملف):
+    الفاتحة والتوبة: مقطع تمهيدي واحد (البسملة هي الآية الأولى في الفاتحة، والتوبة بلا بسملة)،
+    السور ١–٧٧: استعاذة ثم بسملة (مقطعان)، والسور ٧٨–١١٤: مقطع تمهيدي واحد."""
+    if s in (1, 9):
+        return 1
+    return 2 if s <= 77 else 1
+
 
 
 def choose(results, prior):
@@ -30,7 +41,7 @@ def choose(results, prior):
     if not ok:
         return None
     best_lead = min(ok, key=lambda k: ok[k]['score'])
-    if prior in ok and ok[prior]['mean'] <= MAX_MEAN and ok[prior]['score'] <= ok[best_lead]['score'] + 0.8:
+    if prior in ok and ok[prior]['mean'] <= MAX_MEAN and ok[prior]['score'] <= ok[best_lead]['score'] + 2.0:
         return prior, ok[prior]
     return best_lead, ok[best_lead]
 
@@ -64,21 +75,20 @@ def main():
             wav = Path(td) / 'f.wav'
             S.decode(files[s], wav)
             res = {}
-            for lead in (0, 1, 2):
+            for lead in (1, 2):
                 res[lead] = S.analyse(wav, s, None, 0.35, lead)[0]
         info[s] = res
         short = {k: (round(v['mean'], 2), round(v['score'], 2)) if v else None for k, v in res.items()}
         print(f'{s:03d} {files[s].name}: {short}', flush=True)
 
     leads = Counter(min((k for k, v in r.items() if v), key=lambda k: r[k]['score']) for r in info.values() if any(r.values()))
-    prior = a.prior_lead if a.prior_lead is not None else (leads.most_common(1)[0][0] if leads else 1)
-    print(f'النمط المرجعي للمقاطع التمهيدية: {prior} (توزيع الأفضل لكل سورة: {dict(leads)})', flush=True)
+    print(f'توزيع الأفضل حسابيًا لكل سورة (للمقارنة بالنمط المرصود): {dict(leads)}', flush=True)
 
     rows = []
     for s in todo:
         if s not in info:
             continue
-        pick = choose(info[s], prior)
+        pick = choose(info[s], prior_lead(s))
         if not pick:
             rows.append([s, files[s].name, '', '', '', 'لا وقفات كافية'])
             continue
@@ -98,6 +108,10 @@ def main():
                 if lead >= 1 and s not in (1, 9):
                     ay[0] = (bounds[lead - 1], ay[0][1])
                 manifest = []
+                errs = best['errs'][lead:]
+                unsure = [i + 1 for i, e in enumerate(errs) if e > UNSURE]
+                if lead >= 1 and s not in (1, 9) and len(best['errs']) > 0 and best['errs'][lead - 1] > UNSURE and (1 not in unsure):
+                    unsure.append(1)
                 for i, (st, en) in enumerate(ay):
                     name = f'{s:03d}{i + 1:03d}'
                     r = S.cut_clip(wav, st, en, out / f'{name}.m4a')
@@ -107,15 +121,15 @@ def main():
                     manifest.append({'file': f'{name}.m4a', 'start': round(st, 3), 'end': round(en, 3)})
                 else:
                     (out / f'{s:03d}.manifest.json').write_text(json.dumps(
-                        {'source': files[s].name, 'surah': s, 'ayahs': len(words), 'lead': lead,
+                        {'source': files[s].name, 'surah': s, 'ayahs': len(words), 'lead': lead, 'unsure': sorted(unsure),
                          'mean_error': round(best['mean'], 3), 'clips': manifest}, ensure_ascii=False), encoding='utf-8')
                     status = 'تم القص'
         print(f'{s:03d} lead={lead} mean={best["mean"]:.2f} worst={best["worst"]:.2f} -> {status}', flush=True)
-        rows.append([s, files[s].name, lead, f'{best["mean"]:.2f}', f'{best["worst"]:.2f}', status])
+        rows.append([s, files[s].name, lead, f'{best["mean"]:.2f}', f'{best["worst"]:.2f}', status, len(unsure) if status == 'تم القص' else ''])
 
     with open(out / 'report.csv', 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
-        w.writerow(['surah', 'file', 'lead_clips', 'mean_error', 'worst_error', 'status'])
+        w.writerow(['surah', 'file', 'lead_clips', 'mean_error', 'worst_error', 'status', 'unsure_clips'])
         w.writerows(rows)
     bad = [r for r in rows if r[5] not in ('تم القص', 'جيد')]
     print(f'\nالمجموع {len(rows)} · تحتاج مراجعة: {len(bad)} · التقرير: {out / "report.csv"}', flush=True)
